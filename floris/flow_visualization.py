@@ -92,6 +92,8 @@ def visualize_cut_plane(
     color_bar=False,
     label_contours=False,
     title="",
+    colorbar_label="m/s",
+    line_contour=True,
     **kwargs
 ):
     """
@@ -119,6 +121,9 @@ def visualize_cut_plane(
         label_contours (Boolean, optional): Flag to include a numerical contour labels
             on the plot. Defaults to False.
         title (str, optional): User-supplied title for the plot. Defaults to "".
+        colorbar_label (str, optional): Label of the color bar. Defaults to "m/s".
+        line_contour (Boolean, optional): Flag to draw line contours on top of the
+            filled contours. Defaults to True.
         **kwargs: Additional parameters to pass to line contour plot.
 
     Returns:
@@ -164,23 +169,24 @@ def visualize_cut_plane(
     )
 
     # Add line contour
-    line_contour_cut_plane(
-        cut_plane,
-        ax=ax,
-        levels=levels,
-        colors="b",
-        label_contours=label_contours,
-        linewidths=0.8,
-        alpha=0.3,
-        **kwargs
-    )
+    if line_contour:
+        line_contour_cut_plane(
+            cut_plane,
+            ax=ax,
+            levels=levels,
+            colors="b",
+            label_contours=label_contours,
+            linewidths=0.8,
+            alpha=0.3,
+            **kwargs
+        )
 
     if cut_plane.normal_vector == "x":
         ax.invert_xaxis()
 
     if color_bar:
         cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label('m/s')
+        cbar.set_label(colorbar_label)
 
     # Set the title
     ax.set_title(title)
