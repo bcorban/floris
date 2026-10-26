@@ -274,14 +274,15 @@ def test_SimpleDeratingTurbine():
     )
     assert np.allclose(test_ai, base_ai)
 
-    # When power_setpoints are 0, turbine is shut down.
+    # When power_setpoints are 0, turbine is shut down. The thrust coefficient is kept
+    # at its lower bound (1e-4) so that the wake models do not divide by zero.
     test_Ct = SimpleDeratingTurbine.thrust_coefficient(
         power_thrust_table=turbine_data["power_thrust_table"],
         velocities=wind_speed * np.ones((1, n_turbines, 3, 3)), # 1 findex, 1 turbine, 3x3 grid
         air_density=turbine_data["power_thrust_table"]["ref_air_density"],
         power_setpoints=np.zeros((1, n_turbines)),
     )
-    assert np.allclose(test_Ct, 0)
+    assert np.allclose(test_Ct, 1e-4)
 
     test_power = SimpleDeratingTurbine.power(
         power_thrust_table=turbine_data["power_thrust_table"],
@@ -297,7 +298,7 @@ def test_SimpleDeratingTurbine():
         air_density=turbine_data["power_thrust_table"]["ref_air_density"],
         power_setpoints=np.zeros((1, n_turbines)),
     )
-    assert np.allclose(test_ai, 0)
+    assert np.allclose(test_ai, (1 - np.sqrt(1 - 1e-4)) / 2)
 
     # When power setpoints are less than available, results should be less than when no setpoint
     wind_speed = 20 # High, so that turbine is above rated nominally

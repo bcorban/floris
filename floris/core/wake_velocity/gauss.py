@@ -72,6 +72,9 @@ class GaussVelocityDeficit(BaseModel):
         # Opposite sign convention in this model
         yaw_angle = -1 * yaw_angle_i
 
+        # Clamp ct to avoid NaN from sqrt(1 - ct) and 0/0 in uR
+        ct_i = np.clip(ct_i, 0.0001, 0.9999)
+
         # Initialize the velocity deficit
         uR = u_initial * ct_i / (2.0 * (1 - np.sqrt(1 - ct_i)))
         u0 = u_initial * np.sqrt(1 - ct_i)

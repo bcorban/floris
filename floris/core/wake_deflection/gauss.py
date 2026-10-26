@@ -134,6 +134,9 @@ class GaussVelocityDeflection(BaseModel):
         # TODO: connect support for tilt
         tilt = 0.0  # turbine.tilt_angle
 
+        # Clamp ct to avoid NaN from sqrt(1 - ct) and 0/0 in uR
+        ct_i = np.clip(ct_i, 0.0001, 0.9999)
+
         # initial velocity deficits
         uR = (
             freestream_velocity
@@ -322,7 +325,12 @@ def wake_added_yaw(
     # w_core = (-1 * Gamma_wake_rotation * yLocs) / (2 * pi * rC) * core_shape * decay
 
     # Cap the effective yaw values between -45 and 45 degrees
-    val = 2 * (avg_v - v_core) / (v_top + v_bottom)
+    denom = v_top + v_bottom
+    val = np.where(
+        np.abs(denom) > 1e-10,
+        2 * (avg_v - v_core) / denom,
+        0.0,
+    )
     val = np.where(val < -1.0, -1.0, val)
     val = np.where(val > 1.0, 1.0, val)
     y = np.degrees(0.5 * np.arcsin(val))

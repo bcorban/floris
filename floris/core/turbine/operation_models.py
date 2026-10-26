@@ -355,9 +355,15 @@ class SimpleDeratingTurbine(BaseOperationModel):
                 velocities=velocities,
                 air_density=air_density
             )
-            power_fractions = power_setpoints / base_powers
+            power_fractions = np.where(
+                base_powers > 0,
+                power_setpoints / np.maximum(base_powers, 1e-10),
+                0.0,
+            )
             thrust_coefficients = power_fractions * base_thrust_coefficients
-            return np.minimum(base_thrust_coefficients, thrust_coefficients)
+            thrust_coefficients = np.minimum(base_thrust_coefficients, thrust_coefficients)
+            # Keep away from 0 and 1, where the wake models divide by zero
+            return np.clip(thrust_coefficients, 0.0001, 0.9999)
 
     def axial_induction(
         power_thrust_table: dict,
