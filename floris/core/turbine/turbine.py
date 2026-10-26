@@ -546,6 +546,9 @@ class Turbine(BaseClass):
             Required if `correct_cp_ct_for_tilt = True`. Defaults to None.
         multi_dimensional_cp_ct (bool): Use a multidimensional power_thrust_table. Defaults to
             False.
+        acoustics (dict[str, float]): Parameters of the acoustic model, with the keys
+            "rated_rotor_speed" (rpm), "mean_chord" (m) and "number_of_blades". Only needed by
+            FlorisModel.run_acoustic_model. Defaults to None.
     """
     turbine_type: str = field()
     rotor_diameter: float = field()
@@ -558,6 +561,8 @@ class Turbine(BaseClass):
     floating_tilt_table: dict[str, NDArrayFloat] | None = field(default=None)
 
     multi_dimensional_cp_ct: bool = field(default=False)
+
+    acoustics: dict[str, float] | None = field(default=None)
 
     # Initialized in the post_init function
     rotor_radius: float = field(init=False)

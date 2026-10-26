@@ -30,6 +30,19 @@ TSR: 8.0
 operation_model: 'cosine-loss'
 
 ###
+# Parameters of the acoustic model. See FlorisModel.run_acoustic_model for details.
+acoustics:
+  ###
+  # Rotor speed at rated power (rpm). Float type.
+  rated_rotor_speed: 12.1
+  ###
+  # Mean blade chord (m), approximate. Float type.
+  mean_chord: 3.0
+  ###
+  # Number of blades. Integer type.
+  number_of_blades: 3
+
+###
 # Group of parameters needed to evaluate the power and thrust produced by the turbine.
 power_thrust_table:
   ###

@@ -30,10 +30,12 @@ from floris.type_dec import (
     NDArrayStr,
 )
 from floris.utilities import (
+    cosd,
     load_yaml,
     nested_get,
     nested_set,
     print_nested_dict,
+    wind_delta,
 )
 from floris.wind_data import (
     TimeSeries,
@@ -42,6 +44,10 @@ from floris.wind_data import (
     WindRoseWRG,
     WindTIRose,
 )
+
+
+# Distance from the hub at which the acoustic model gives the sound pressure level [m]
+ACOUSTIC_REFERENCE_DISTANCE = 100.0
 
 
 class FlorisModel(LoggingManager):
@@ -120,6 +126,9 @@ class FlorisModel(LoggingManager):
 
         # Initialize stored wind_data object to None
         self._wind_data = None
+
+        # Acoustic levels are computed on first access after each run
+        self._acoustic_results = None
 
     ### Methods for setting and running the FlorisModel
 
@@ -513,6 +522,9 @@ class FlorisModel(LoggingManager):
         # Perform the wake calculations
         self.core.steady_state_atmospheric_condition()
 
+        # Discard the acoustic levels of the previous solution
+        self._acoustic_results = None
+
     def run_no_wake(self) -> None:
         """
         This function is similar to `run()` except that it does not apply a wake model. That is,
@@ -526,6 +538,8 @@ class FlorisModel(LoggingManager):
         # Finalize values to user-supplied order
         self.core.finalize()
 
+        # Discard the acoustic levels of the previous solution
+        self._acoustic_results = None
 
     ### Methods for extracting turbine performance after running
 
@@ -1054,6 +1068,202 @@ class FlorisModel(LoggingManager):
     def get_turbine_TIs(self) -> NDArrayFloat:
         return self.core.flow_field.turbulence_intensity_field
 
+
+    ### Methods for the acoustic model
+
+    @property
+    def acoustic_results(self) -> NDArrayFloat:
+        """
+        A-weighted sound pressure level of each turbine at ACOUSTIC_REFERENCE_DISTANCE from
+        its hub, in dB(A), with shape (n_findex, n_turbines). Computed with
+        :py:meth:`run_acoustic_model` the first time it is accessed after a run.
+        """
+        if self._acoustic_results is None or self.core.state is not State.USED:
+            self._acoustic_results = self.run_acoustic_model()
+        return self._acoustic_results
+
+    def run_acoustic_model(self) -> NDArrayFloat:
+        """
+        Estimate the noise emitted by each turbine with the empirical model of Hagg et al.
+        (reference [88] in Wagner, Bareiss and Guidati, Wind Turbine Noise, Springer, 1996).
+
+        The overall A-weighted sound pressure level at a distance r from the hub is
+
+        L_pA = 63.3 log10(V_tip) + 11.5 log10(B c / (pi R)) + 2.5 log10(C_T)
+               + 20 log10(D / r) - 10 log10(D) - 27.5
+
+        with V_tip the blade tip speed [m/s], B the number of blades, c the mean blade chord [m],
+        R and D the rotor radius and diameter [m], and C_T the thrust coefficient. The level is
+        evaluated at r = ACOUSTIC_REFERENCE_DISTANCE.
+
+        The tip speed follows the turbine tip-speed ratio (TSR) applied to the rotor-averaged
+        wind speed normal to the rotor, up to the rated rotor speed. With a power setpoint P
+        below the rated power P_rated, the rated rotor speed is reduced by (P / P_rated)^(1/3).
+
+        The parameters B, c and the rated rotor speed are read from the ``acoustics`` section
+        of each turbine definition (keys number_of_blades, mean_chord and rated_rotor_speed,
+        in rpm). The rated power is the maximum of the turbine power curve.
+
+        Returns:
+            NDArrayFloat: Sound pressure levels in dB(A), with shape (n_findex, n_turbines).
+        """
+        if self.core.state is not State.USED:
+            raise RuntimeError(
+                "Can't compute the acoustic levels without first running `FlorisModel.run()`."
+            )
+
+        parameters = self._get_acoustic_parameters()
+        D = self.core.farm.rotor_diameters  # (n_findex, n_turbines)
+        thrust_coefficients = self.get_turbine_thrust_coefficients()
+
+        # Rated rotor speed reduced by derating [rpm]
+        power_ratio = np.minimum(self.core.farm.power_setpoints / parameters["rated_power"], 1.0)
+        rated_rotor_speed = parameters["rated_rotor_speed"] * power_ratio ** (1 / 3)
+
+        # Below rated, the rotor follows the TSR with the wind speed normal to the rotor.
+        # Above rated, the rotor speed is constant.
+        rotor_average_speed = np.mean(self.core.flow_field.u, axis=(2, 3))
+        normal_speed = rotor_average_speed * cosd(self.core.farm.yaw_angles)
+        tip_speed = np.minimum(
+            self.core.farm.TSRs * normal_speed,
+            rated_rotor_speed * (D / 2) / 60 * (2 * np.pi),
+        )
+
+        blade_area_ratio = (
+            2 * parameters["number_of_blades"] * parameters["mean_chord"] / (np.pi * D)
+        )
+
+        # A shut-down rotor has a zero tip speed, and so a level of -inf
+        with np.errstate(divide="ignore"):
+            return (
+                63.3 * np.log10(tip_speed)
+                + 11.5 * np.log10(blade_area_ratio)
+                + 2.5 * np.log10(thrust_coefficients)
+                + 20.0 * np.log10(D / ACOUSTIC_REFERENCE_DISTANCE)
+                - 10.0 * np.log10(D)
+                - 27.5
+            )
+
+    def _get_acoustic_parameters(self) -> dict[str, NDArrayFloat]:
+        """
+        Collect the acoustic model parameters of each turbine.
+
+        Returns:
+            dict: rated_rotor_speed [rpm], mean_chord [m], number_of_blades and
+            rated_power [W], each with shape (n_turbines,).
+        """
+        keys = ("rated_rotor_speed", "mean_chord", "number_of_blades")
+        parameters = {key: [] for key in (*keys, "rated_power")}
+        for turbine in self.core.farm.turbine_definitions:
+            acoustics = turbine.get("acoustics", {})
+            missing = [key for key in keys if key not in acoustics]
+            if missing:
+                raise ValueError(
+                    f"Turbine type {turbine['turbine_type']} is missing {', '.join(missing)} "
+                    "in its `acoustics` section, which the acoustic model needs."
+                )
+            power_curve = turbine["power_thrust_table"].get("power")
+            if power_curve is None:
+                raise NotImplementedError(
+                    "The acoustic model needs the turbine power curve and does not support "
+                    "multidimensional turbines."
+                )
+            for key in keys:
+                parameters[key].append(acoustics[key])
+            parameters["rated_power"].append(np.max(power_curve) * 1e3)  # kW to W
+        return {key: np.array(value, dtype=float) for key, value in parameters.items()}
+
+    def calculate_acoustic_plane(
+        self,
+        height: float,
+        findex_for_viz: int = 0,
+        x_resolution: int = 200,
+        y_resolution: int = 200,
+        x_bounds: tuple | None = None,
+        y_bounds: tuple | None = None,
+    ) -> CutPlane:
+        """
+        Compute the A-weighted sound pressure level of the whole farm on a horizontal plane.
+
+        The level of each turbine (see :py:meth:`run_acoustic_model`) is propagated from
+        ACOUSTIC_REFERENCE_DISTANCE to each point with spherical spreading,
+        -20 log10(r / ACOUSTIC_REFERENCE_DISTANCE), and a dipole directivity,
+        10 log10(|cos(theta)|), where r is the distance to the hub and theta the angle between
+        the rotor axis and the direction from the hub to the point. The contributions of all
+        turbines are summed as squared pressures.
+
+        The levels are stored in the ``u`` column of the returned CutPlane (``v`` and ``w``
+        are zero), so that the plane can be plotted with
+        :py:func:`~floris.flow_visualization.visualize_cut_plane`.
+
+        Args:
+            height (float): Height of the plane [m], for example 0 for ground level.
+            findex_for_viz (int, optional): Index of the condition to use. Defaults to 0.
+            x_resolution (int, optional): Number of points along x. Defaults to 200.
+            y_resolution (int, optional): Number of points along y. Defaults to 200.
+            x_bounds (tuple, optional): Limits of the plane along x [m]. Defaults to the
+                farm extent plus 2 rotor diameters upstream and 10 downstream.
+            y_bounds (tuple, optional): Limits of the plane along y [m]. Defaults to the
+                farm extent plus 2 rotor diameters on each side.
+
+        Returns:
+            :py:class:`~.tools.cut_plane.CutPlane`: Sound pressure levels in dB(A), in ``u``.
+        """
+        fi = findex_for_viz
+        spl_reference = self.acoustic_results[fi]  # (n_turbines,)
+
+        layout_x = self.core.farm.layout_x
+        layout_y = self.core.farm.layout_y
+        hub_heights = self.core.farm.hub_heights[fi]
+        D = self.core.farm.rotor_diameters[fi]
+
+        if x_bounds is None:
+            x_bounds = (np.min(layout_x) - 2 * np.max(D), np.max(layout_x) + 10 * np.max(D))
+        if y_bounds is None:
+            y_bounds = (np.min(layout_y) - 2 * np.max(D), np.max(layout_y) + 2 * np.max(D))
+
+        X, Y = np.meshgrid(
+            np.linspace(x_bounds[0], x_bounds[1], x_resolution),
+            np.linspace(y_bounds[0], y_bounds[1], y_resolution),
+        )
+        Z = np.full_like(X, height)
+
+        # Unit vector normal to each rotor, pointing into the wind, in the inertial frame
+        yaw_inertial = self.core.farm.yaw_angles[fi] - wind_delta(
+            self.core.flow_field.wind_directions[fi]
+        )
+        nx = -np.cos(np.deg2rad(yaw_inertial))
+        ny = -np.sin(np.deg2rad(yaw_inertial))
+        nz = np.zeros_like(nx)  # Rotor tilt is not considered
+
+        # Sum the squared pressures of all turbines
+        p2_total = np.zeros_like(X)
+        for t in range(len(spl_reference)):
+            dx = X - layout_x[t]
+            dy = Y - layout_y[t]
+            dz = Z - hub_heights[t]
+            r = np.maximum(np.sqrt(dx**2 + dy**2 + dz**2), 1.0)  # Avoid r = 0
+
+            directivity = np.abs(dx * nx[t] + dy * ny[t] + dz * nz[t]) / r
+            spl = (
+                spl_reference[t]
+                - 20.0 * np.log10(r / ACOUSTIC_REFERENCE_DISTANCE)
+                + 10.0 * np.log10(directivity + 1e-12)
+            )
+            p2_total += 10.0 ** (spl / 10.0)
+
+        spl_total = 10.0 * np.log10(p2_total + 1e-30)
+
+        df = pd.DataFrame({
+            "x1": X.flatten(),
+            "x2": Y.flatten(),
+            "x3": Z.flatten(),
+            "u": spl_total.flatten(),
+            "v": np.zeros(X.size),
+            "w": np.zeros(X.size),
+        }).sort_values(["x2", "x1"]).reset_index(drop=True)
+
+        return CutPlane(df, x_resolution, y_resolution, "z")
 
     ### Methods for sampling and visualization
 
