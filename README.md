@@ -1,5 +1,9 @@
 # FLORIS Wake Modeling and Wind Farm Controls Software
 
+> **This is a fork of [FLORIS](https://github.com/NatLabRockies/floris) v4.6.2 that adds an
+> acoustic model.** It is not maintained by the FLORIS team. The changes are listed in
+> [Acoustic extension](#acoustic-extension) below. The rest of this README is the original one.
+
 FLORIS is a controls-focused wind farm simulation software incorporating
 steady-state engineering wake models into a performance-focused Python
 framework. It has been in active development at NLR since 2013 and the latest
@@ -10,6 +14,48 @@ The software is in active development and engagement with the development team
 is highly encouraged. If you are interested in using FLORIS to conduct studies
 of a wind farm or extending FLORIS to include your own wake model, please join
 the conversation in [GitHub Discussions](https://github.com/NatLabRockies/floris/discussions/)!
+
+## Acoustic extension
+
+This fork estimates the noise emitted by wind turbines and maps it around the farm:
+
+- `FlorisModel.acoustic_results`: A-weighted sound pressure level (SPL) of each turbine,
+  100 m from its hub, in dB(A), with shape `(n_findex, n_turbines)`. It uses the empirical
+  model of Hagg et al. given in Wagner, Bareiss and Guidati, *Wind Turbine Noise* (Springer,
+  1996), which depends on the blade tip speed, the thrust coefficient and the rotor geometry.
+  Yaw misalignment and derating change the tip speed and the thrust coefficient, and so the
+  noise.
+- `FlorisModel.calculate_acoustic_plane(height, ...)`: total SPL of the farm on a horizontal
+  plane (for example at ground level), with spherical spreading and a dipole directivity. It
+  returns a `CutPlane` that `flow_visualization.visualize_cut_plane` can plot.
+- An optional `acoustics` section in the turbine definition, with the rated rotor speed, the
+  mean blade chord and the number of blades. It is filled in for `nrel_5MW` and
+  `nrel_5MW_calibrated`.
+
+It also changes the following parts of FLORIS:
+
+- The `mixed` operation model accepts a yaw angle and a power setpoint on the same turbine
+  (the original raises an error).
+- The thrust coefficient is clipped to [1e-4, 0.9999] in the Gauss wake models and the
+  derating models, to avoid divisions by zero for shut-down turbines.
+- `visualize_cut_plane` takes `colorbar_label` and `line_contour` arguments.
+- New turbine `nrel_5MW_calibrated`: `nrel_5MW` with a yaw loss exponent of 3.0.
+
+To install, clone this repository, check out the `acoustics` branch, and run `pip install -e .`
+from its root. Example: [examples/examples_acoustics/001_acoustic_noise_map.py](examples/examples_acoustics/001_acoustic_noise_map.py).
+
+```python
+from floris import FlorisModel
+from floris.flow_visualization import visualize_cut_plane
+
+fmodel = FlorisModel("examples/inputs/gch.yaml")
+fmodel.set(layout_x=[0.0, 630.0], layout_y=[0.0, 0.0], wind_speeds=[10.0],
+           wind_directions=[270.0], turbulence_intensities=[0.06])
+fmodel.run()
+print(fmodel.acoustic_results)  # dB(A) at 100 m from each hub
+plane = fmodel.calculate_acoustic_plane(height=0.0)
+visualize_cut_plane(plane, color_bar=True, colorbar_label="SPL [dB(A)]", line_contour=False)
+```
 
 ## WETO software
 
