@@ -477,29 +477,53 @@ def test_MixedOperationTurbine():
         air_density=turbine_data["power_thrust_table"]["ref_air_density"],
         power_setpoints=np.array([[POWER_SETPOINT_DEFAULT, derated_power]]),
     )
-    base_ai_yaw = CosineLossTurbine.axial_induction(
-        power_thrust_table=turbine_data["power_thrust_table"],
-        velocities=wind_speed * np.ones((1, n_turbines, 3, 3)), # 1 findex, 1 turbine, 3x3 grid
-        air_density=turbine_data["power_thrust_table"]["ref_air_density"],
-        yaw_angles=np.array([[20.0, 0.0]]),
-        tilt_angles=tilt_angles_nom,
-        tilt_interp=None
-    )
+    # For the yawed turbine, the axial induction follows from the yawed thrust coefficient
+    base_ai_yaw = (1 - np.sqrt(1 - base_Ct_yaw)) / 2
     base_ai = np.array([[base_ai_yaw[0,0], base_ai_dr[0,1]]])
     assert np.allclose(test_ai, base_ai)
 
-    # Check error raised when both yaw and power setpoints are set
-    with pytest.raises(ValueError):
-        # Second turbine has both a power setpoint and a yaw angle
-        MixedOperationTurbine.thrust_coefficient(
-            power_thrust_table=turbine_data["power_thrust_table"],
-            velocities=wind_speed * np.ones((1, n_turbines, 3, 3)), # 1 findex, 1 turbine, 3x3 grid
-            air_density=turbine_data["power_thrust_table"]["ref_air_density"],
-            power_setpoints=np.array([[POWER_SETPOINT_DEFAULT, derated_power]]),
-            yaw_angles=np.array([[0.0, 20.0]]),
-            tilt_angles=tilt_angles_nom,
-            tilt_interp=None
-        )
+    # Check that yaw and power setpoints can be combined on the same turbine:
+    # the yawed power is capped by the power setpoint
+    yaw_angles = np.array([[20.0, 20.0]])
+    power_setpoints = np.array([[POWER_SETPOINT_DEFAULT, derated_power]])
+    test_power = MixedOperationTurbine.power(
+        power_thrust_table=turbine_data["power_thrust_table"],
+        velocities=wind_speed * np.ones((1, n_turbines, 3, 3)),
+        air_density=turbine_data["power_thrust_table"]["ref_air_density"],
+        power_setpoints=power_setpoints,
+        yaw_angles=yaw_angles,
+        tilt_angles=tilt_angles_nom,
+        tilt_interp=None
+    )
+    yawed_power = CosineLossTurbine.power(
+        power_thrust_table=turbine_data["power_thrust_table"],
+        velocities=wind_speed * np.ones((1, n_turbines, 3, 3)),
+        air_density=turbine_data["power_thrust_table"]["ref_air_density"],
+        yaw_angles=yaw_angles,
+        tilt_angles=tilt_angles_nom,
+        tilt_interp=None
+    )
+    assert np.allclose(test_power, np.minimum(yawed_power, power_setpoints))
+    assert test_power[0,1] == derated_power
+
+    test_Ct = MixedOperationTurbine.thrust_coefficient(
+        power_thrust_table=turbine_data["power_thrust_table"],
+        velocities=wind_speed * np.ones((1, n_turbines, 3, 3)),
+        air_density=turbine_data["power_thrust_table"]["ref_air_density"],
+        power_setpoints=power_setpoints,
+        yaw_angles=yaw_angles,
+        tilt_angles=tilt_angles_nom,
+        tilt_interp=None
+    )
+    yawed_Ct = CosineLossTurbine.thrust_coefficient(
+        power_thrust_table=turbine_data["power_thrust_table"],
+        velocities=wind_speed * np.ones((1, n_turbines, 3, 3)),
+        yaw_angles=yaw_angles,
+        tilt_angles=tilt_angles_nom,
+        tilt_interp=None
+    )
+    assert np.allclose(test_Ct[0,0], yawed_Ct[0,0])
+    assert np.allclose(test_Ct[0,1], yawed_Ct[0,1] * derated_power / yawed_power[0,1])
 
 def test_AWCTurbine():
 

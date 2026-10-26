@@ -369,8 +369,11 @@ def test_disable_turbines():
     fmodel_remove_middle.run()
     power_with_middle_removed = fmodel_remove_middle.get_turbine_powers()
 
-    np.testing.assert_almost_equal(power_with_middle_disabled[0,2], power_with_middle_removed[0,1])
-    np.testing.assert_almost_equal(power_with_middle_disabled[1,2], power_with_middle_removed[1,1])
+    # The mixed model keeps a small thrust coefficient (1e-4) on disabled turbines,
+    # so the disabled turbine still leaves a negligible wake
+    np.testing.assert_allclose(
+        power_with_middle_disabled[:,2], power_with_middle_removed[:,1], rtol=1e-6
+    )
 
     # Check that yaw angles are correctly set when turbines are disabled
     fmodel.set(

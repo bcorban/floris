@@ -381,130 +381,120 @@ class SimpleDeratingTurbine(BaseOperationModel):
 
 @define
 class MixedOperationTurbine(BaseOperationModel):
+    """
+    Operation model that combines yaw misalignment and derating on the same turbine.
 
-    @staticmethod
+    The available power is computed with the CosineLossTurbine model (which accounts for yaw
+    and tilt) and is then capped by the power setpoint. The thrust coefficient is scaled by the
+    ratio of the power setpoint to the available power, as in SimpleDeratingTurbine. When only
+    yaw angles or only power setpoints are set, the power and thrust coefficient match the
+    CosineLossTurbine and SimpleDeratingTurbine models, respectively.
+    """
     def power(
+        power_thrust_table: dict,
+        velocities: NDArrayFloat,
+        air_density: float,
         yaw_angles: NDArrayFloat,
-        power_setpoints: NDArrayFloat,
-        **kwargs
+        tilt_angles: NDArrayFloat,
+        tilt_interp: NDArrayObject,
+        power_setpoints: NDArrayFloat | None,
+        average_method: str = "cubic-mean",
+        cubature_weights: NDArrayFloat | None = None,
+        correct_cp_ct_for_tilt: bool = False,
+        **_ # <- Allows other models to accept other keyword arguments
     ):
-        (
-            yaw_angles,
-            power_setpoints,
-            yaw_angles_mask,
-            power_setpoints_mask,
-            neither_mask
-        ) = MixedOperationTurbine._handle_mixed_operation_setpoints(
+        base_powers = CosineLossTurbine.power(
+            power_thrust_table=power_thrust_table,
+            velocities=velocities,
+            air_density=air_density,
             yaw_angles=yaw_angles,
-            power_setpoints=power_setpoints
+            tilt_angles=tilt_angles,
+            tilt_interp=tilt_interp,
+            average_method=average_method,
+            cubature_weights=cubature_weights,
+            correct_cp_ct_for_tilt=correct_cp_ct_for_tilt
         )
+        if power_setpoints is None:
+            return base_powers
+        else:
+            return np.minimum(base_powers, power_setpoints)
 
-        powers = np.zeros_like(power_setpoints)
-        powers[yaw_angles_mask] += CosineLossTurbine.power(
-            yaw_angles=yaw_angles,
-            **kwargs
-        )[yaw_angles_mask]
-        powers[power_setpoints_mask] += SimpleDeratingTurbine.power(
-            power_setpoints=power_setpoints,
-            **kwargs
-        )[power_setpoints_mask]
-        powers[neither_mask] += SimpleTurbine.power(
-            **kwargs
-        )[neither_mask]
-
-        return powers
-
-    @staticmethod
     def thrust_coefficient(
-        yaw_angles: NDArrayFloat,
+        power_thrust_table: dict,
+        velocities: NDArrayFloat,
+        air_density: float,
         power_setpoints: NDArrayFloat,
-        **kwargs
+        yaw_angles: NDArrayFloat,
+        tilt_angles: NDArrayFloat,
+        tilt_interp: NDArrayObject,
+        correct_cp_ct_for_tilt: bool = False,
+        average_method: str = "cubic-mean",
+        cubature_weights: NDArrayFloat | None = None,
+        **_ # <- Allows other models to accept other keyword arguments
     ):
-        (
-            yaw_angles,
-            power_setpoints,
-            yaw_angles_mask,
-            power_setpoints_mask,
-            neither_mask
-        ) = MixedOperationTurbine._handle_mixed_operation_setpoints(
+        base_thrust_coefficients = CosineLossTurbine.thrust_coefficient(
+            power_thrust_table=power_thrust_table,
+            velocities=velocities,
+            air_density=air_density,
             yaw_angles=yaw_angles,
-            power_setpoints=power_setpoints
+            tilt_angles=tilt_angles,
+            tilt_interp=tilt_interp,
+            average_method=average_method,
+            cubature_weights=cubature_weights,
+            correct_cp_ct_for_tilt=correct_cp_ct_for_tilt
         )
+        if power_setpoints is None:
+            return base_thrust_coefficients
+        else:
+            # Assume thrust coefficient scales directly with power
+            base_powers = CosineLossTurbine.power(
+                power_thrust_table=power_thrust_table,
+                velocities=velocities,
+                air_density=air_density,
+                yaw_angles=yaw_angles,
+                tilt_angles=tilt_angles,
+                tilt_interp=tilt_interp,
+                average_method=average_method,
+                cubature_weights=cubature_weights,
+                correct_cp_ct_for_tilt=correct_cp_ct_for_tilt
+            )
+            power_fractions = np.where(
+                base_powers > 0,
+                power_setpoints / np.maximum(base_powers, 1e-10),
+                0.0,
+            )
+            thrust_coefficients = power_fractions * base_thrust_coefficients
+            thrust_coefficients = np.minimum(base_thrust_coefficients, thrust_coefficients)
+            # Keep away from 0 and 1, where the wake models divide by zero
+            return np.clip(thrust_coefficients, 0.0001, 0.9999)
 
-        thrust_coefficients = np.zeros_like(power_setpoints)
-        thrust_coefficients[yaw_angles_mask] += CosineLossTurbine.thrust_coefficient(
-            yaw_angles=yaw_angles,
-            **kwargs
-        )[yaw_angles_mask]
-        thrust_coefficients[power_setpoints_mask] += SimpleDeratingTurbine.thrust_coefficient(
-            power_setpoints=power_setpoints,
-            **kwargs
-        )[power_setpoints_mask]
-        thrust_coefficients[neither_mask] += SimpleTurbine.thrust_coefficient(
-            **kwargs
-        )[neither_mask]
-
-        return thrust_coefficients
-
-    @staticmethod
     def axial_induction(
-        yaw_angles: NDArrayFloat,
+        power_thrust_table: dict,
+        velocities: NDArrayFloat,
+        air_density: float,
         power_setpoints: NDArrayFloat,
-        **kwargs
+        yaw_angles: NDArrayFloat,
+        tilt_angles: NDArrayFloat,
+        tilt_interp: NDArrayObject,
+        average_method: str = "cubic-mean",
+        cubature_weights: NDArrayFloat | None = None,
+        correct_cp_ct_for_tilt: bool = False,
+        **_ # <- Allows other models to accept other keyword arguments
     ):
-        (
-            yaw_angles,
-            power_setpoints,
-            yaw_angles_mask,
-            power_setpoints_mask,
-            neither_mask
-        ) = MixedOperationTurbine._handle_mixed_operation_setpoints(
+        thrust_coefficient = MixedOperationTurbine.thrust_coefficient(
+            power_thrust_table=power_thrust_table,
+            velocities=velocities,
+            air_density=air_density,
+            power_setpoints=power_setpoints,
             yaw_angles=yaw_angles,
-            power_setpoints=power_setpoints
+            tilt_angles=tilt_angles,
+            tilt_interp=tilt_interp,
+            correct_cp_ct_for_tilt=correct_cp_ct_for_tilt,
+            average_method=average_method,
+            cubature_weights=cubature_weights,
         )
 
-        axial_inductions = np.zeros_like(power_setpoints)
-        axial_inductions[yaw_angles_mask] += CosineLossTurbine.axial_induction(
-            yaw_angles=yaw_angles,
-            **kwargs
-        )[yaw_angles_mask]
-        axial_inductions[power_setpoints_mask] += SimpleDeratingTurbine.axial_induction(
-            power_setpoints=power_setpoints,
-            **kwargs
-        )[power_setpoints_mask]
-        axial_inductions[neither_mask] += SimpleTurbine.axial_induction(
-            **kwargs
-        )[neither_mask]
-
-        return axial_inductions
-
-    @staticmethod
-    def _handle_mixed_operation_setpoints(
-        yaw_angles: NDArrayFloat,
-        power_setpoints: NDArrayFloat,
-    ):
-        """
-        Check for incompatible yaw angles and power setpoints and raise an error if found.
-        Return masks and updated setpoints.
-        """
-        # If any turbines are disabled, set their yaw angles to zero
-        yaw_angles[power_setpoints <= POWER_SETPOINT_DISABLED] = 0.0
-
-        # Create masks for whether yaw angles and power setpoints are set
-        yaw_angles_mask = yaw_angles != 0.0
-        power_setpoints_mask = power_setpoints < POWER_SETPOINT_DEFAULT
-        neither_mask = np.logical_not(yaw_angles_mask) & np.logical_not(power_setpoints_mask)
-
-        # Check for incompatibility and raise error if found.
-        if (power_setpoints_mask & yaw_angles_mask).any():
-            raise ValueError((
-                "Power setpoints and yaw angles are incompatible."
-                "If yaw_angles entry is nonzero, power_setpoints must be greater than"
-                " or equal to {0}.".format(POWER_SETPOINT_DEFAULT)
-            ))
-
-        # Return updated setpoints as well as masks
-        return yaw_angles, power_setpoints, yaw_angles_mask, power_setpoints_mask, neither_mask
+        return (1 - np.sqrt(1 - thrust_coefficient))/2
 
 @define
 class AWCTurbine(BaseOperationModel):
